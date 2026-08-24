@@ -1,0 +1,4 @@
+# 忽略 .agent 文件夹
+.agent/
+# 忽略 Guntanks 文件夹
+Guntanks/

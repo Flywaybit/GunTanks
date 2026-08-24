@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GunTanks Online</title>
+  <link rel="stylesheet" href="src/styles.css">
+  <style>
+    .battle-shell { width: min(1200px, 96vw); padding: 0; background: transparent; }
+    .battle-stage { position: relative; width: 100%; aspect-ratio: 1200 / 650; overflow: hidden; }
+    .battle-stage canvas { width: 100%; height: 100%; object-fit: contain; }
+    #main-timer { position: absolute; top: 13px; left: 50%; transform: translateX(-50%); z-index: 4; color: red; font-size: 60px; line-height: 1; background: transparent; pointer-events: none; }
+    .battle-meta { position: absolute; inset: 16px 16px auto; z-index: 5; }
+    .battle-hud { position: relative; width: 100%; height: calc(90px * var(--battle-scale, 1)); overflow: hidden; }
+    .battle-hud-content { width: 1200px; height: 90px; transform: scale(var(--battle-scale, 1)); transform-origin: top left; }
+    .shot-selector { width: 30px; height: 50px; padding: 2px; margin: 3px; border: 1px solid #000; border-radius: 2px; }
+    .shot-selector.selected { outline: none; }
+    .shot-selector.selected i { background: rgb(0,255,0); }
+    .shot-selector.ss.selected i { background: rgb(255,0,0); }
+    .angle-display { width: 50px; font-size: 18px; }
+    .angle-display strong { width: 40px; height: 20px; min-width: 40px; padding: 0; }
+    .power-container #power-fill { width: 0; }
+  </style>
+</head>
+<body>
+  <main id="app">
+    <section id="auth" data-page class="panel">
+      <h1>GunTanks Online</h1>
+      <input id="username" placeholder="Username (3-24)" autocomplete="username">
+      <input id="password" type="password" placeholder="Password (8-72)" autocomplete="current-password">
+      <div class="actions"><button id="login">Log in</button><button id="register">Register</button></div>
+      <p id="auth-status" role="status"></p>
+    </section>
+    <section id="lobby" data-page class="panel hidden">
+      <header><h2>Lobby</h2><button id="logout">Log out</button></header>
+      <p>Select a game mode.</p>
+      <div class="actions"><button id="single-player">Single Player</button><button data-count="2">2 Player Match</button></div>
+      <p id="page-status" role="status"></p>
+    </section>
+    <section id="matching" data-page class="panel hidden">
+      <h2>Finding opponents</h2><p><span id="matching-count"></span> player match</p><p>Waiting: <span id="matching-elapsed">0s</span></p>
+      <button id="cancel-match">Cancel</button><p id="matching-status" role="status"></p>
+    </section>
+    <section id="match-found" data-page class="panel hidden"><h2>Match found</h2><p>Preparing battle...</p></section>
+    <section id="battle-loading" data-page class="panel hidden"><h2>Loading arena</h2><p id="loading-status">Loading...</p></section>
+    <section id="battle" data-page class="hidden battle-shell">
+      <div class="battle-stage">
+        <div id="main-timer" aria-live="polite">30</div>
+        <canvas id="stage" width="1200" height="650"></canvas>
+        <div class="battle-meta">
+          <div id="wind-container"><span>Wind</span><strong id="wind-text">0</strong></div>
+          <div id="turn-queue-container"><span>Delay Queue</span><ul id="turn-queue"></ul></div>
+          <button id="leave-battle" type="button">Leave</button>
+        </div>
+      </div>
+      <div class="battle-hud"><div class="battle-hud-content original-hud">
+        <div class="shot-selection" aria-label="Weapon selection">
+          <div class="shot-selector selected" data-weapon="shell1" tabindex="0"><span>1</span><i id="light1"></i></div>
+          <div class="shot-selector" data-weapon="shell2" tabindex="0"><span>2</span><i id="light2"></i></div>
+          <div class="shot-selector ss" data-weapon="ss" tabindex="0"><span>SS</span><i id="lightss"></i></div>
+        </div>
+        <div class="angle-display"><span>Angle</span><strong id="angle-display">0</strong></div>
+        <div class="power-container" aria-label="Power"><div id="power-fill"></div><span id="power-value">0%</span></div>
+      </div></div>
+    </section>
+    <section id="result" data-page class="panel hidden"><h2 id="result-title">Battle complete</h2><button id="back-lobby">Back to lobby</button></section>
+    <section id="reconnecting" data-page class="panel hidden"><h2>Reconnecting</h2><p id="reconnect-status">Restoring your session...</p></section>
+  </main>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

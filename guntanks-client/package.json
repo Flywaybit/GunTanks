@@ -1,0 +1,7 @@
+{
+  "name": "guntanks-client",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": { "dev": "npx serve .", "build": "node build.mjs" }
+}

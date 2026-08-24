@@ -1,0 +1,92 @@
+import { PAGE, store } from './store.js';
+
+const TRANSITIONS = {
+  [PAGE.AUTH]: {
+    LOGIN_SUCCESS: PAGE.LOBBY,
+    WS_OPEN: PAGE.AUTH,
+  },
+  [PAGE.LOBBY]: {
+    MATCH_START: PAGE.MATCHING,
+    WS_DISCONNECTED: PAGE.RECONNECTING,
+    LOGOUT: PAGE.AUTH,
+  },
+  [PAGE.MATCHING]: {
+    MATCH_FOUND: PAGE.MATCH_FOUND,
+    MATCH_CANCEL: PAGE.MATCH_CANCELING,
+    WS_DISCONNECTED: PAGE.RECONNECTING,
+    MATCH_CANCELLED: PAGE.LOBBY,
+  },
+  [PAGE.MATCH_CANCELING]: {
+    MATCH_CANCELLED: PAGE.LOBBY,
+    MATCH_FOUND: PAGE.MATCH_FOUND,
+    WS_DISCONNECTED: PAGE.RECONNECTING,
+  },
+  [PAGE.MATCH_FOUND]: {
+    BATTLE_LOADING: PAGE.BATTLE_LOADING,
+    WS_DISCONNECTED: PAGE.RECONNECTING,
+    LOAD_FAILED: PAGE.LOBBY,
+  },
+  [PAGE.BATTLE_LOADING]: {
+    BATTLE_READY: PAGE.BATTLE,
+    LOAD_FAILED: PAGE.LOBBY,
+    WS_DISCONNECTED: PAGE.RECONNECTING,
+  },
+  [PAGE.BATTLE]: {
+    BATTLE_FINISHED: PAGE.RESULT,
+    LEAVE_CONFIRM: PAGE.LEAVING_BATTLE,
+    WS_DISCONNECTED: PAGE.RECONNECTING,
+  },
+  [PAGE.LEAVING_BATTLE]: {
+    LEAVE_SUCCESS: PAGE.RESULT,
+    LEAVE_FAILED: PAGE.BATTLE,
+    BATTLE_FINISHED: PAGE.RESULT,
+    WS_DISCONNECTED: PAGE.RECONNECTING,
+  },
+  [PAGE.RECONNECTING]: {
+    AUTH_EXPIRED: PAGE.AUTH,
+    RESUME_LOBBY: PAGE.LOBBY,
+    RESUME_MATCHING: PAGE.MATCHING,
+    RESUME_BATTLE: PAGE.BATTLE,
+    RESUME_RESULT: PAGE.RESULT,
+  },
+  [PAGE.RESULT]: {
+    BACK_TO_LOBBY: PAGE.LOBBY,
+    LOGOUT: PAGE.AUTH,
+    WS_DISCONNECTED: PAGE.RECONNECTING,
+  },
+};
+
+const INPUT_PAGES = new Set([
+  PAGE.MATCHING,
+  PAGE.MATCH_CANCELING,
+  PAGE.MATCH_FOUND,
+  PAGE.BATTLE_LOADING,
+  PAGE.BATTLE,
+  PAGE.LEAVING_BATTLE,
+  PAGE.RECONNECTING,
+]);
+
+export function canReceiveBattleInput(page = store.page) {
+  return page === PAGE.BATTLE;
+}
+
+export function shouldReleaseInput(page = store.page) {
+  return INPUT_PAGES.has(page);
+}
+
+export function transition(event, fallback = null) {
+  const next = TRANSITIONS[store.page]?.[event] || fallback;
+  if (!next) {
+    return false;
+  }
+  store.page = next;
+  return true;
+}
+
+export function goTo(page) {
+  if (!Object.values(PAGE).includes(page)) {
+    return false;
+  }
+  store.page = page;
+  return true;
+}
