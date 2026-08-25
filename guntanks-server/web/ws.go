@@ -155,6 +155,25 @@ func (g *Gateway) unregister(m *managedConn) {
 	})
 }
 
+func (g *Gateway) finalizeConnection(ctx context.Context, m *managedConn, intentionalLeave bool) {
+	g.mu.Lock()
+	currentOwner := g.owners[m.userID+"\x00"+m.sessionID] == m.id
+	g.mu.Unlock()
+	if !currentOwner {
+		return
+	}
+	if !intentionalLeave {
+		if battleID, ok := g.Battles.BattleForUser(m.userID); ok {
+			if state, active := g.Battles.Snapshot(battleID); active && state.Phase == "playing" {
+				_ = g.Presence.SetReconnect(ctx, m.userID, battleID, g.ReconnectGrace)
+				return
+			}
+		}
+	}
+	_ = g.Presence.ReleaseOnline(ctx, m.userID, m.sessionID)
+	_ = g.Presence.ClearReconnect(ctx, m.userID)
+}
+
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if g.IsShuttingDown() {
 		http.Error(w, "server shutting down", http.StatusServiceUnavailable)
@@ -178,45 +197,24 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if m == nil {
 		return
 	}
-	defer func() {
-		g.mu.Lock()
-		current := g.owners[u.ID+"\x00"+u.SessionID] == m.id
-		g.mu.Unlock()
-		if current {
-			_ = g.Presence.ReleaseOnline(context.Background(), u.ID, u.SessionID)
-		}
-	}()
-	defer g.unregister(m)
-	defer c.Close()
-	if battleID, ok := g.Battles.BattleForUser(u.ID); ok {
-		_ = g.Presence.ClearReconnect(r.Context(), u.ID)
-		_ = battleID
-	} else {
-		_ = g.Presence.ClearReconnect(r.Context(), u.ID)
-	}
-	c.SetReadLimit(g.MaxMsgBytes)
-	events, unsubscribe := g.Battles.Subscribe(u.ID)
-	defer unsubscribe()
 	intentionalLeave := false
-	defer func() {
-		g.mu.Lock()
-		currentOwner := g.owners[u.ID+"\x00"+u.SessionID] == m.id
-		g.mu.Unlock()
-		if currentOwner && !intentionalLeave {
-			if battleID, ok := g.Battles.BattleForUser(u.ID); ok {
-				if state, active := g.Battles.Snapshot(battleID); active && state.Phase == "playing" {
-					_ = g.Presence.SetReconnect(context.Background(), u.ID, battleID, g.ReconnectGrace)
-				}
-			}
-		}
-	}()
-
 	done := make(chan struct{})
 	stop := make(chan struct{})
 	outbound := make(chan protocol.Event, 128)
-	g.setOutbound(m, outbound)
 	var workers sync.WaitGroup
 	workers.Add(2)
+	g.setOutbound(m, outbound)
+	defer c.Close()
+	defer func() {
+		close(stop)
+		workers.Wait()
+		g.finalizeConnection(context.Background(), m, intentionalLeave)
+		g.unregister(m)
+	}()
+	c.SetReadLimit(g.MaxMsgBytes)
+	events, unsubscribe := g.Battles.Subscribe(u.ID)
+	defer unsubscribe()
+	_ = g.Presence.ClearReconnect(r.Context(), u.ID)
 	sendOutbound := func(ev protocol.Event) bool {
 		select {
 		case outbound <- ev:
@@ -272,7 +270,6 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	requestIDs := make(map[string]struct{})
 	windowStarted, commandsInWindow := time.Now(), 0
 	_, needsResync := g.Battles.BattleForUser(u.ID)
-	defer func() { close(stop); workers.Wait() }()
 	for {
 		_ = c.SetReadDeadline(time.Now().Add(25 * time.Second))
 		var msg protocol.Message

@@ -2,3 +2,4 @@
 .agent/
 # 忽略 Guntanks 文件夹
 Guntanks/
+.gocache/
