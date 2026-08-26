@@ -147,3 +147,148 @@ func TestIntroCompletesAndBroadcasts(t *testing.T) {
 		}
 	}
 }
+
+func TestSnapshotPlayersAreArrays(t *testing.T) {
+	manager := NewManager(dao.NewMemoryStore(), 60, time.Second)
+	defer manager.Shutdown(context.Background())
+	events1, close1 := manager.Subscribe("u1")
+	defer close1()
+	manager.Subscribe("u2")
+	state, _, err := manager.Create(context.Background(), "matchmaking", []Player{{UserID: "u1", Username: "one"}, {UserID: "u2", Username: "two"}}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitEvent(t, events1, time.Second)
+
+	// battle.resync path (line 337 equivalent).
+	if err := manager.Submit(context.Background(), "u1", protocol.Message{Type: "battle.resync", BattleID: state.BattleID, RequestID: "resync-1"}); err != nil {
+		t.Fatal(err)
+	}
+	event := waitEvent(t, events1, time.Second)
+	if event.Type != "battle.snapshot" {
+		t.Fatalf("unexpected event: %+v", event)
+	}
+	payload, _ := event.Payload.(map[string]any)
+	players, ok := payload["players"].([]Player)
+	if !ok || len(players) != 2 {
+		t.Fatalf("snapshot players is not a 2-element array: %T %+v", payload["players"], payload["players"])
+	}
+	byTank := map[string]Player{}
+	for _, p := range players {
+		if p.Username == "" || p.TankID == "" {
+			t.Fatalf("snapshot player missing username/tank_id: %+v", p)
+		}
+		byTank[p.TankID] = p
+	}
+	if byTank["tank_1"].Username != "one" || byTank["tank_2"].Username != "two" {
+		t.Fatalf("snapshot players mapping wrong: %+v", byTank)
+	}
+
+	// Reconnect subscribe path (line 272 equivalent).
+	close1()
+	events1b, close1b := manager.Subscribe("u1")
+	defer close1b()
+	for {
+		event := waitEvent(t, events1b, 2*time.Second)
+		if event.Type != "battle.snapshot" {
+			continue
+		}
+		payload, _ := event.Payload.(map[string]any)
+		players, ok := payload["players"].([]Player)
+		if !ok || len(players) != 2 {
+			t.Fatalf("reconnect snapshot players is not an array: %T %+v", payload["players"], payload["players"])
+		}
+		break
+	}
+}
+
+func TestFinishedCarriesPlayersArray(t *testing.T) {
+	manager := NewManager(dao.NewMemoryStore(), 60, time.Second)
+	defer manager.Shutdown(context.Background())
+	events1, close1 := manager.Subscribe("u1")
+	defer close1()
+	events2, close2 := manager.Subscribe("u2")
+	defer close2()
+	state, _, err := manager.Create(context.Background(), "matchmaking", []Player{{UserID: "u1", Username: "one"}, {UserID: "u2", Username: "two"}}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitEvent(t, events1, time.Second)
+	waitEvent(t, events2, time.Second)
+	if err := manager.Submit(context.Background(), "u1", protocol.Message{Type: "battle.leave", BattleID: state.BattleID, RequestID: "leave-1"}); err != nil {
+		t.Fatal(err)
+	}
+	event := waitEvent(t, events1, 3*time.Second)
+	if event.Type != "battle.finished" {
+		t.Fatalf("unexpected event: %+v", event)
+	}
+	payload, ok := event.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("finished payload is not a wrapper object: %T", event.Payload)
+	}
+	finishedState, ok := payload["state"].(engine.State)
+	if !ok || finishedState.Phase != "finished" || finishedState.WinnerTankID != "tank_2" {
+		t.Fatalf("finished wrapper state wrong: %+v", payload["state"])
+	}
+	players, ok := payload["players"].([]Player)
+	if !ok || len(players) != 2 {
+		t.Fatalf("finished players is not a 2-element array: %T %+v", payload["players"], payload["players"])
+	}
+	for _, p := range players {
+		if p.Username == "" || p.TankID == "" {
+			t.Fatalf("finished player missing username/tank_id: %+v", p)
+		}
+	}
+}
+
+func TestFinishedAfterKillingShotCarriesPlayers(t *testing.T) {
+	manager := NewManager(dao.NewMemoryStore(), 60, time.Second)
+	defer manager.Shutdown(context.Background())
+	events1, close1 := manager.Subscribe("u1")
+	defer close1()
+	events2, close2 := manager.Subscribe("u2")
+	defer close2()
+	state, _, err := manager.Create(context.Background(), "matchmaking", []Player{{UserID: "u1", Username: "one"}, {UserID: "u2", Username: "two"}}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitEvent(t, events1, time.Second)
+	waitEvent(t, events2, time.Second)
+	for {
+		ev := waitEvent(t, events1, 3*time.Second)
+		if ev.Type == "battle.intro_complete" {
+			break
+		}
+	}
+	rt := manager.battles[state.BattleID]
+	rt.actor.State.Wind.Speed = 0
+	rt.actor.State.Tanks[1].Health = 100
+	if err := manager.Submit(context.Background(), "u1", protocol.Message{Type: "battle.fire", BattleID: state.BattleID, RequestID: "kill-1", Payload: map[string]any{"power": 80.0}}); err != nil {
+		t.Fatal(err)
+	}
+	var finished protocol.Event
+	for {
+		ev := waitEvent(t, events1, 3*time.Second)
+		if ev.Type == "battle.finished" {
+			finished = ev
+			break
+		}
+	}
+	payload, ok := finished.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("final battle.finished payload is not a wrapper object: %T", finished.Payload)
+	}
+	finishedState, ok := payload["state"].(engine.State)
+	if !ok || finishedState.Phase != "finished" || finishedState.WinnerTankID != "tank_1" {
+		t.Fatalf("final finished wrapper state wrong: %+v", payload["state"])
+	}
+	players, ok := payload["players"].([]Player)
+	if !ok || len(players) != 2 {
+		t.Fatalf("final finished players is not a 2-element array: %T %+v", payload["players"], payload["players"])
+	}
+	for _, p := range players {
+		if p.Username == "" || p.TankID == "" {
+			t.Fatalf("final finished player missing username/tank_id: %+v", p)
+		}
+	}
+}

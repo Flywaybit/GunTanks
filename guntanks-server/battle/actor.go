@@ -178,11 +178,27 @@ func (a *Actor) apply(c Command) {
 			return
 		}
 	}
+	if a.State.Paused {
+		switch c.Type {
+		case "pause", "resume", "leave", "disconnect_timeout", "move_stop", "aim_stop":
+			// lifecycle and cleanup commands remain available while paused.
+		default:
+			e = engine.ErrBattlePaused
+			ev := Event{Type: "battle.tank_state", State: a.State, Error: e}
+			if c.Reply != nil {
+				c.Reply <- ev
+			}
+			a.Events <- ev
+			return
+		}
+	}
 	switch c.Type {
 	case "pause":
 		if !a.paused {
 			a.paused = true
 			a.pausedAt = time.Now()
+			a.State.Paused = true
+			a.moveDirection, a.aimDirection = "", ""
 		}
 	case "resume":
 		if a.paused {
@@ -191,6 +207,7 @@ func (a *Actor) apply(c Command) {
 			}
 			a.paused = false
 			a.pausedAt = time.Time{}
+			a.State.Paused = false
 		}
 	case "move_start":
 		if c.TankID != a.State.CurrentTankID || (c.Direction != "left" && c.Direction != "right") {

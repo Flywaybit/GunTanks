@@ -9,6 +9,7 @@ import (
 var ErrNotYourTurn = errors.New("not your turn")
 var ErrInvalidCommand = errors.New("invalid command")
 var ErrIntroInProgress = errors.New("intro in progress")
+var ErrBattlePaused = errors.New("battle paused")
 
 type Weapon string
 
@@ -45,6 +46,7 @@ type State struct {
 	Revision       uint64            `json:"revision"`
 	EventSeq       uint64            `json:"event_seq"`
 	IntroEndMS     int64             `json:"intro_end_ms,omitempty"`
+	Paused         bool              `json:"paused,omitempty"`
 	Phase          string            `json:"phase"`
 	Round          int               `json:"round"`
 	TurnIndex      int               `json:"turn_index"`

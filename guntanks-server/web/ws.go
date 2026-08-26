@@ -11,6 +11,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"guntanks-server/battle"
+	"guntanks-server/engine"
 	"guntanks-server/protocol"
 	gredis "guntanks-server/redis"
 	"guntanks-server/service"
@@ -478,6 +479,8 @@ func codeFor(err error) string {
 		return "INVALID_STATE"
 	case battle.ErrUserNotInBattle:
 		return "UNAUTHENTICATED"
+	case engine.ErrBattlePaused:
+		return "BATTLE_PAUSED"
 	default:
 		return "INVALID_ARGUMENT"
 	}

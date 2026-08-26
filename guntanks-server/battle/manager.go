@@ -58,6 +58,7 @@ type runtime struct {
 	actor                  *Actor
 	record                 dao.BattleRecord
 	players                map[string]Player
+	playerList             []Player
 	tanksByUser            map[string]string
 	clients                map[string]*client
 	state                  engine.State
@@ -144,7 +145,7 @@ func (m *Manager) Create(ctx context.Context, source string, users []Player, see
 		mapVersion = "development-fallback"
 	}
 	m.mapVersion = mapVersion
-	rt := &runtime{actor: NewActor(state, m.tickHz), record: rec, players: playersByUser, tanksByUser: tanksByUser, clients: map[string]*client{}, state: state, terrain: terrain, lastSnapshot: time.Now()}
+	rt := &runtime{actor: NewActor(state, m.tickHz), record: rec, players: playersByUser, playerList: players, tanksByUser: tanksByUser, clients: map[string]*client{}, state: state, terrain: terrain, lastSnapshot: time.Now()}
 	rt.actor.Configure(rt.terrain, m.turnTimeout)
 	rt.state = rt.actor.State
 	rt.record.State = rt.state
@@ -269,7 +270,7 @@ func (m *Manager) Subscribe(userID string) (<-chan protocol.Event, func()) {
 		rt.mu.Unlock()
 		ch <- protocol.Event{Type: "reconnect.accepted", BattleID: state.BattleID, Revision: state.Revision, EventSeq: state.EventSeq, Payload: map[string]any{"battle_id": state.BattleID, "event_seq": state.EventSeq}}
 		terrainSnapshot, _ := rt.terrain.Snapshot(rt.snapshotSeq)
-		ch <- protocol.Event{Type: "battle.snapshot", BattleID: state.BattleID, Revision: state.Revision, EventSeq: state.EventSeq, Payload: map[string]any{"state": state, "players": rt.players, "terrain_snapshot": terrainSnapshot}}
+		ch <- protocol.Event{Type: "battle.snapshot", BattleID: state.BattleID, Revision: state.Revision, EventSeq: state.EventSeq, Payload: map[string]any{"state": state, "players": rt.playerList, "terrain_snapshot": terrainSnapshot}}
 	}
 	return ch, func() {
 		m.mu.Lock()
@@ -334,7 +335,7 @@ func (m *Manager) Submit(ctx context.Context, userID string, msg protocol.Messag
 		state := rt.state
 		rt.mu.RUnlock()
 		terrainSnapshot, _ := rt.terrain.Snapshot(rt.snapshotSeq)
-		m.sendTo(rt, userID, protocol.Event{Type: "battle.snapshot", BattleID: state.BattleID, Revision: state.Revision, EventSeq: state.EventSeq, Payload: map[string]any{"state": state, "players": rt.players, "terrain_snapshot": terrainSnapshot}})
+		m.sendTo(rt, userID, protocol.Event{Type: "battle.snapshot", BattleID: state.BattleID, Revision: state.Revision, EventSeq: state.EventSeq, Payload: map[string]any{"state": state, "players": rt.playerList, "terrain_snapshot": terrainSnapshot}})
 		after, _ := msg.Payload["last_event_seq"].(float64)
 		if events, err := m.store.ListEvents(ctx, msg.BattleID, uint64(after)); err == nil {
 			for _, e := range events {
@@ -451,12 +452,12 @@ func (m *Manager) pump(rt *runtime) {
 		}
 		if ev.State.Phase == "finished" && ev.Shot == nil {
 			out.Type = "battle.finished"
-			out.Payload = ev.State
+			out.Payload = map[string]any{"state": ev.State, "players": rt.playerList}
 		}
 		m.broadcast(rt, out)
 		m.append(context.Background(), rt, out, "")
 		if ev.State.Phase == "finished" && ev.Shot != nil {
-			final := protocol.Event{Type: "battle.finished", BattleID: ev.State.BattleID, Revision: ev.State.Revision, EventSeq: ev.State.EventSeq, Payload: ev.State}
+			final := protocol.Event{Type: "battle.finished", BattleID: ev.State.BattleID, Revision: ev.State.Revision, EventSeq: ev.State.EventSeq, Payload: map[string]any{"state": ev.State, "players": rt.playerList}}
 			m.broadcast(rt, final)
 			m.append(context.Background(), rt, final, "")
 		}
@@ -509,6 +510,8 @@ func codeForError(err error) string {
 		return "WEAPON_COOLDOWN"
 	case "intro in progress":
 		return "INTRO_IN_PROGRESS"
+	case "battle paused":
+		return "BATTLE_PAUSED"
 	default:
 		return "INVALID_ARGUMENT"
 	}

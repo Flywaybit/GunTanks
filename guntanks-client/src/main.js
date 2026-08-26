@@ -30,9 +30,21 @@ function newerState(candidate, current) {
   if (!current || candidate.revision > current.revision || (candidate.revision === current.revision && candidate.event_seq > current.event_seq)) return candidate;
   return current;
 }
-function deferBattleState(payload) { store.pendingBattle = newerState(battleState(payload), store.pendingBattle); }
+function normalizePlayers(rawPlayers) {
+  if (Array.isArray(rawPlayers)) return rawPlayers;
+  if (rawPlayers && typeof rawPlayers === 'object') return Object.values(rawPlayers);
+  return [];
+}
+function deferBattleState(payload) {
+  const state = battleState(payload);
+  const players = payload?.players ?? payload?.state?.players;
+  if (players && state) state.players = players;
+  store.pendingBattle = newerState(state, store.pendingBattle);
+}
 function finalizeBattle(result) {
-  store.result = result || store.battle || {};
+  const payload = result || store.battle || {};
+  const state = battleState(payload);
+  store.result = { ...state, players: normalizePlayers(payload?.players ?? state?.players) };
   store.battle = null;
   store.pendingBattle = null;
   store.reconnect = null;
@@ -44,14 +56,19 @@ function finalizeBattle(result) {
   animationGeneration += 1;
   clearInputState();
   page(PAGE.RESULT);
-  views.setText('result-title', store.result.winner_tank_id ? `Winner: ${tankDisplayName(store.result, store.result.winner_tank_id)}` : 'Battle complete');
+  views.setText('result-title', state?.winner_tank_id ? `Winner: ${tankDisplayName(store.result, state.winner_tank_id)}` : 'Battle complete');
 }
 
 function tankDisplayName(state, tankId) {
   if (!state || !tankId) return tankId;
-  const name = state.tankNames?.[tankId];
-  if (name) return name;
-  return store.battleIdentity?.playersByTankId?.[tankId]?.username || tankId;
+  const identity = store.battleIdentity?.playersByTankId?.[tankId]?.username;
+  if (identity) return identity;
+  const rawPlayers = state?.players;
+  if (rawPlayers) {
+    const fromPlayers = normalizePlayers(rawPlayers).find((p) => p?.tank_id === tankId)?.username;
+    if (fromPlayers) return fromPlayers;
+  }
+  return state?.tankNames?.[tankId] || tankId;
 }
 
 const socket = new GameSocket(handleEvent, (connection) => {
@@ -82,8 +99,8 @@ function setBattle(payload) {
   const state = battleState(payload);
   if (!state?.battle_id) return;
   if (store.battle?.battle_id && store.battle.battle_id !== state.battle_id) animationGeneration += 1;
-  const players = payload?.players || payload?.state?.players;
-  if (players?.length) {
+  const players = normalizePlayers(payload?.players ?? payload?.state?.players);
+  if (players.length) {
     const playersByTankId = Object.fromEntries(players.filter((p) => p.tank_id).map((p) => [p.tank_id, p]));
     const player = players.find((item) => item.user_id === store.user?.id);
     store.battleIdentity = { battleId: state.battle_id, myTankId: player?.tank_id || store.battleIdentity?.myTankId, playersByTankId };
@@ -131,6 +148,7 @@ function setBattle(payload) {
     }));
   }
   syncIntroUI(state);
+  syncPauseUI(state);
 }
 
 function syncIntroUI(state) {
@@ -149,7 +167,28 @@ function syncIntroUI(state) {
     introGeneration += 1;
     timer?.classList.remove('hidden');
     introStatus?.classList.add('hidden');
-    if (store.page === PAGE.BATTLE && !store.input.charging) store.input.actionLocked = false;
+    if (store.page === PAGE.BATTLE && !store.input.charging && !state.paused) store.input.actionLocked = false;
+  }
+}
+
+function syncPauseUI(state) {
+  const paused = !!state?.paused;
+  const pauseStatus = $('pause-status');
+  const timer = $('main-timer');
+  const introStatus = $('intro-status');
+  if (paused) {
+    clearInputState();
+    store.input.actionLocked = true;
+    pauseStatus?.classList.remove('hidden');
+    introStatus?.classList.add('hidden');
+    timer?.classList.add('hidden');
+  } else {
+    pauseStatus?.classList.add('hidden');
+    if (state?.intro_active) {
+      timer?.classList.add('hidden');
+    } else {
+      timer?.classList.remove('hidden');
+    }
   }
 }
 
@@ -188,7 +227,7 @@ function endIntroAnimation() {
 
 function sendBattleCommand(type, payload = {}) {
   if (localMode) return handleLocalCommand(type, payload);
-  if (store.page !== PAGE.BATTLE || syncing || store.input.actionLocked || !store.battle?.battle_id || store.battle?.intro_active) return false;
+  if (store.page !== PAGE.BATTLE || syncing || store.input.actionLocked || !store.battle?.battle_id || store.battle?.intro_active || store.battle?.paused) return false;
   store.input.actionLocked = type === 'battle.fire';
   return socket.send(type, payload, { battle_id: store.battle.battle_id, revision: store.battle.revision });
 }
@@ -334,10 +373,10 @@ function handleEvent(event) {
     if (event.type === 'battle.intro_complete') endIntroAnimation();
     if (event.type === 'battle.turn_changed') { clearInputState(); $('power-fill').style.width = '0%'; views.setText('power-value', '0%'); }
     setBattle(event.payload);
-    if (!event.payload?.intro_end_ms || Date.now() + serverOffset >= event.payload.intro_end_ms) store.input.actionLocked = false;
+    if ((!event.payload?.intro_end_ms || Date.now() + serverOffset >= event.payload.intro_end_ms) && !event.payload?.paused) store.input.actionLocked = false;
     if (event.event_seq) lastBattleEvent = Math.max(lastBattleEvent, event.event_seq);
     if (event.type === 'battle.snapshot' && event.battle_id) socket.send('battle.resync_ack', {}, { battle_id: event.battle_id });
-    if (event.payload?.phase === 'finished') {
+    if (battleState(event.payload)?.phase === 'finished') {
       finalizeBattle(event.payload);
     }
     return;
@@ -365,12 +404,13 @@ function handleEvent(event) {
   }
   if (event.type === 'battle.finished' || event.type === 'battle.result') {
     if (shotAnimating) { deferBattleState(event.payload); return; }
-    finalizeBattle(battleState(event.payload));
+    finalizeBattle(event.payload);
     return;
   }
   if (event.type === 'error') {
-    store.input.actionLocked = false;
     const code = event.payload?.code;
+    if (code === 'BATTLE_PAUSED') return;
+    store.input.actionLocked = false;
     if (code === 'SESSION_EXPIRED') {
       setStoredToken(null); socket.close(); clearBattleState(); page(PAGE.AUTH); views.setText('auth-status', 'Session expired. Please log in again.'); return;
     }
@@ -505,7 +545,7 @@ new ResizeObserver(([entry]) => {
 
 setInterval(() => {
   const deadline = store.battle?.turn_deadline_ms;
-  if (store.page === PAGE.BATTLE && deadline) views.setText('main-timer', `${Math.max(0, Math.min(30, Math.ceil((deadline - Date.now() - serverOffset) / 1000)))}`);
+  if (store.page === PAGE.BATTLE && deadline && !store.battle?.paused) views.setText('main-timer', `${Math.max(0, Math.min(30, Math.ceil((deadline - Date.now() - serverOffset) / 1000)))}`);
 }, 250);
 
 setInterval(() => {
