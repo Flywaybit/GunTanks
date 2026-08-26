@@ -8,6 +8,7 @@ import (
 	"guntanks-server/dao"
 	"guntanks-server/engine"
 	"guntanks-server/protocol"
+	"log"
 	"sync"
 	"time"
 )
@@ -145,6 +146,8 @@ func (m *Manager) Create(ctx context.Context, source string, users []Player, see
 	m.mapVersion = mapVersion
 	rt := &runtime{actor: NewActor(state, m.tickHz), record: rec, players: playersByUser, tanksByUser: tanksByUser, clients: map[string]*client{}, state: state, terrain: terrain, lastSnapshot: time.Now()}
 	rt.actor.Configure(rt.terrain, m.turnTimeout)
+	rt.state = rt.actor.State
+	rt.record.State = rt.state
 	if snap, err := rt.terrain.Snapshot(0); err == nil {
 		_ = m.store.SaveTerrainSnapshot(ctx, dao.TerrainSnapshotRecord{BattleID: id, SnapshotSeq: snap.SnapshotSeq, Width: snap.Width, Height: snap.Height, Encoding: snap.Encoding, Data: snap.Data, Checksum: snap.Checksum, CreatedAt: time.Now()})
 	}
@@ -161,10 +164,10 @@ func (m *Manager) Create(ctx context.Context, source string, users []Player, see
 	m.mu.Unlock()
 	rt.actor.Start()
 	go m.pump(rt)
-	started := protocol.Event{Type: "battle.started", BattleID: id, Revision: state.Revision, EventSeq: state.EventSeq, Payload: map[string]any{"battle_id": id, "seed": seed, "server_time_ms": time.Now().UnixMilli(), "map_version": mapVersion, "players": players, "state": state, "terrain_snapshot": map[string]any{"snapshot_seq": 0, "href": "/api/v1/battles/" + id + "/terrain-snapshot"}}}
+	started := protocol.Event{Type: "battle.started", BattleID: id, Revision: rt.state.Revision, EventSeq: rt.state.EventSeq, Payload: map[string]any{"battle_id": id, "seed": seed, "server_time_ms": time.Now().UnixMilli(), "map_version": mapVersion, "players": players, "state": rt.state, "terrain_snapshot": map[string]any{"snapshot_seq": 0, "href": "/api/v1/battles/" + id + "/terrain-snapshot"}}}
 	m.append(ctx, rt, started, "")
 	m.broadcast(rt, started)
-	return state, players, nil
+	return rt.state, players, nil
 }
 
 func (m *Manager) Snapshot(id string) (engine.State, bool) {
@@ -373,6 +376,7 @@ func (m *Manager) Submit(ctx context.Context, userID string, msg protocol.Messag
 	select {
 	case ev := <-reply:
 		if ev.Error != nil {
+			log.Printf("battle.command.rejected battle_id=%s user_id=%s type=%s code=%s", msg.BattleID, userID, msg.Type, codeForError(ev.Error))
 			m.sendTo(rt, userID, protocol.Event{Type: "error", BattleID: msg.BattleID, Payload: map[string]any{"code": codeForError(ev.Error), "message": ev.Error.Error(), "request_id": msg.RequestID}})
 		}
 	case <-ctx.Done():
@@ -503,6 +507,8 @@ func codeForError(err error) string {
 		return "NOT_YOUR_TURN"
 	case "weapon cooldown":
 		return "WEAPON_COOLDOWN"
+	case "intro in progress":
+		return "INTRO_IN_PROGRESS"
 	default:
 		return "INVALID_ARGUMENT"
 	}

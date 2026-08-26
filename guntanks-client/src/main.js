@@ -5,7 +5,8 @@ import { createViewManager } from './viewManager.js';
 import { createMatchController } from './matchController.js';
 import { createInputController } from './inputController.js';
 import { GameSocket } from './socket.js';
-import { isTerrainReady, loadTerrainSnapshot, render, playShot } from './renderer.js';
+import { isTerrainReady, loadTerrainSnapshot, render, playShot, getTerrainAlphaData } from './renderer.js';
+import { applyFireEffects, canSelectWeapon, computeLandY, randomWind, settleLocalTankY, simulateShot, windChangesOnTurn, windRerollAtRound } from './localSim.js';
 
 const $ = (id) => document.getElementById(id);
 const views = createViewManager();
@@ -15,11 +16,14 @@ let lastBattleEvent = 0;
 let leaveRequested = false;
 let shotAnimating = false;
 let animationGeneration = 0;
+let introAnimating = false;
+let introGeneration = 0;
+let localIntroTimer = 0;
 let localMode = false;
 let localTimer = 0;
 
 function status(text) { views.setText('page-status', text || ''); }
-function page(page) { if (page !== PAGE.BATTLE && shotAnimating) animationGeneration += 1; goTo(page); views.show(page); clearInputState(); const fill = $('power-fill'); if (fill) fill.style.width = '0%'; views.setText('power-value', '0%'); }
+function page(page) { if (page !== PAGE.BATTLE && (shotAnimating || introAnimating)) { animationGeneration += 1; introGeneration += 1; } goTo(page); views.show(page); clearInputState(); const fill = $('power-fill'); if (fill) fill.style.width = '0%'; views.setText('power-value', '0%'); }
 function battleState(payload) { return payload?.state || payload; }
 function newerState(candidate, current) {
   if (!candidate) return current;
@@ -40,7 +44,14 @@ function finalizeBattle(result) {
   animationGeneration += 1;
   clearInputState();
   page(PAGE.RESULT);
-  views.setText('result-title', store.result.winner_tank_id ? `Winner: ${store.result.winner_tank_id}` : 'Battle complete');
+  views.setText('result-title', store.result.winner_tank_id ? `Winner: ${tankDisplayName(store.result, store.result.winner_tank_id)}` : 'Battle complete');
+}
+
+function tankDisplayName(state, tankId) {
+  if (!state || !tankId) return tankId;
+  const name = state.tankNames?.[tankId];
+  if (name) return name;
+  return store.battleIdentity?.playersByTankId?.[tankId]?.username || tankId;
 }
 
 const socket = new GameSocket(handleEvent, (connection) => {
@@ -78,13 +89,14 @@ function setBattle(payload) {
     store.battleIdentity = { battleId: state.battle_id, myTankId: player?.tank_id || store.battleIdentity?.myTankId, playersByTankId };
   }
   if (store.battleIdentity?.battleId === state.battle_id && store.battleIdentity.myTankId) state.my_tank_id = store.battleIdentity.myTankId;
+  state.tankNames = Object.fromEntries((state.tanks || []).map((tank) => [tank.id, store.battleIdentity?.playersByTankId?.[tank.id]?.username || tank.id]));
   store.battle = state;
   syncing = false;
   lastBattleEvent = Math.max(lastBattleEvent, state.event_seq || 0);
   if (store.page !== PAGE.BATTLE && store.page !== PAGE.RECONNECTING) page(PAGE.BATTLE);
   render($('stage'), state);
   if (store.page === PAGE.RECONNECTING && isTerrainReady()) { syncing = false; page(PAGE.BATTLE); }
-  if (!localMode && state.battle_id && !isTerrainReady()) { syncing = true; loadTerrainSnapshot(state.battle_id, store.token).then((ok) => { if (ok) { syncing = false; render($('stage'), state); if (store.page === PAGE.RECONNECTING) page(PAGE.BATTLE); } else { status('Unable to load terrain snapshot. Battle input is locked.'); } }); }
+  if (!localMode && state.battle_id && !isTerrainReady()) { syncing = true; loadTerrainSnapshot(state.battle_id, store.token).then((ok) => { if (ok) { syncing = false; render($('stage'), state); if (store.page === PAGE.RECONNECTING) { page(PAGE.BATTLE); syncIntroUI(state); } } else { status('Unable to load terrain snapshot. Battle input is locked.'); } }); }
   
   const currentTank = state.tanks?.find((tank) => tank.id === state.current_tank_id);
   if (currentTank) {
@@ -95,21 +107,88 @@ function setBattle(payload) {
       node.classList.toggle('selected', selected); node.classList.toggle('cooldown', unavailable); node.setAttribute('aria-disabled', unavailable ? 'true' : 'false');
     });
   }
-  views.setText('wind-text', `${state.wind?.speed ?? 0}`);
+  const windSpeed = state.wind?.speed ?? 0;
+  views.setText('wind-text', `${windSpeed}`);
+  const windArrow = $('wind-arrow');
+  if (windArrow) {
+    if (windSpeed === 0) {
+      windArrow.classList.add('hidden');
+      windArrow.textContent = '→';
+    } else {
+      const windRad = (state.wind?.direction ?? 0) * Math.PI / 180;
+      windArrow.classList.remove('hidden');
+      windArrow.textContent = Math.cos(windRad) >= 0 ? '→' : '←';
+    }
+  }
   if (state.turn_deadline_ms) views.setText('main-timer', `${Math.max(0, Math.min(30, Math.ceil((state.turn_deadline_ms - Date.now() - serverOffset) / 1000)))}`);
   const queue = $('turn-queue');
   if (queue) {
     queue.replaceChildren(...(state.tanks || []).filter((tank) => tank.alive).map((tank) => {
       const item = document.createElement('li');
-      item.textContent = tank.id === state.current_tank_id ? `${tank.id} *` : tank.id;
+      const name = state.tankNames?.[tank.id] || tank.id;
+      item.textContent = tank.id === state.current_tank_id ? `${name} *` : name;
       return item;
     }));
   }
+  syncIntroUI(state);
+}
+
+function syncIntroUI(state) {
+  const introEnd = state?.intro_end_ms;
+  const inIntro = !!introEnd && Date.now() + serverOffset < introEnd;
+  state.intro_active = inIntro;
+  const timer = $('main-timer');
+  const introStatus = $('intro-status');
+  if (inIntro) {
+    timer?.classList.add('hidden');
+    introStatus?.classList.remove('hidden');
+    store.input.actionLocked = true;
+    if (store.page === PAGE.BATTLE) startIntroAnimation(state);
+  } else {
+    introAnimating = false;
+    introGeneration += 1;
+    timer?.classList.remove('hidden');
+    introStatus?.classList.add('hidden');
+    if (store.page === PAGE.BATTLE && !store.input.charging) store.input.actionLocked = false;
+  }
+}
+
+function startIntroAnimation(state) {
+  if (introAnimating) return;
+  const introEnd = state.intro_end_ms;
+  if (!introEnd) return;
+  const startY = new Map((state.tanks || []).map((tank) => [tank.id, tank.y]));
+  introAnimating = true;
+  const generation = ++introGeneration;
+  const battleID = state.battle_id;
+  const frame = () => {
+    if (generation !== introGeneration || store.page !== PAGE.BATTLE || store.battle?.battle_id !== battleID) return;
+    const remaining = introEnd - (Date.now() + serverOffset);
+    if (remaining <= 0) {
+      introAnimating = false;
+      render($('stage'), store.battle);
+      return;
+    }
+    const elapsed = 1500 - remaining;
+    const t = Math.min(1, Math.max(0, elapsed / 1500));
+    const visual = {
+      ...store.battle,
+      tanks: (store.battle?.tanks || []).map((tank) => ({ ...tank, y: startY.get(tank.id) + ((tank.land_y ?? startY.get(tank.id)) - startY.get(tank.id)) * t })),
+    };
+    render($('stage'), visual);
+    requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
+}
+
+function endIntroAnimation() {
+  introAnimating = false;
+  introGeneration += 1;
 }
 
 function sendBattleCommand(type, payload = {}) {
   if (localMode) return handleLocalCommand(type, payload);
-  if (store.page !== PAGE.BATTLE || syncing || store.input.actionLocked || !store.battle?.battle_id) return false;
+  if (store.page !== PAGE.BATTLE || syncing || store.input.actionLocked || !store.battle?.battle_id || store.battle?.intro_active) return false;
   store.input.actionLocked = type === 'battle.fire';
   return socket.send(type, payload, { battle_id: store.battle.battle_id, revision: store.battle.revision });
 }
@@ -117,26 +196,114 @@ function sendBattleCommand(type, payload = {}) {
 function startSinglePlayer() {
   localMode = true;
   store.battleIdentity = { battleId: 'local', myTankId: 'tank_1', playersByTankId: Object.fromEntries([1, 2, 3, 4].map((i) => [`tank_${i}`, { user_id: `local-${i}`, tank_id: `tank_${i}`, username: `Player ${i}` }])) };
-  const state = { battle_id: 'local', phase: 'playing', round: 1, turn_index: 0, current_tank_id: 'tank_1', turn_deadline_ms: Date.now() + 30000, wind: { speed: 0, direction: 0 }, tanks: [1, 2, 3, 4].map((i) => ({ id: `tank_${i}`, x: [100, 400, 700, 1070][i - 1], y: 300, angle: 0, health: 1000, alive: true, weapon: 'shell1', ss_cooldown: 0, moved: 0, facing: 'right' })), revision: 0, event_seq: 0 };
+  const terrain = getTerrainAlphaData();
+  const introEnd = Date.now() + 1500;
+  const tanks = [1, 2, 3, 4].map((i) => {
+    const x = [100, 400, 700, 1070][i - 1];
+    return { id: `tank_${i}`, x, y: -200, land_y: computeLandY(x, terrain), angle: 0, health: 1000, alive: true, weapon: 'shell1', ss_cooldown: 0, moved: 0, delay: 0, facing: 'right' };
+  });
+  const state = { battle_id: 'local', phase: 'playing', round: 1, turn_index: 0, current_tank_id: 'tank_1', turn_deadline_ms: introEnd + 30000, intro_end_ms: introEnd, wind: randomWind(), tanks, revision: 0, event_seq: 0, turns_completed: 0, wind_changes: 0 };
   store.battle = state;
   setBattle(state);
   clearInterval(localTimer);
   localTimer = setInterval(() => { if (localMode && store.battle?.phase === 'playing' && Date.now() >= store.battle.turn_deadline_ms) advanceLocalTurn(); }, 250);
+  clearTimeout(localIntroTimer);
+  localIntroTimer = setTimeout(() => {
+    if (!localMode || store.battle?.battle_id !== 'local') return;
+    const current = store.battle;
+    for (const item of current.tanks) item.y = item.land_y;
+    setBattle(current);
+    views.setText('main-timer', '30');
+  }, 1500);
 }
 function advanceLocalTurn() {
   const state = store.battle; if (!state) return;
+  const alive = state.tanks.filter((item) => item.alive).length;
+  if (alive === 0) return;
   let next = state.turn_index;
   for (let i = 0; i < state.tanks.length; i++) { next = (next + 1) % state.tanks.length; if (state.tanks[next].alive) break; }
-  state.turn_index = next; state.current_tank_id = state.tanks[next].id; state.round += next === 0 ? 1 : 0; state.turn_deadline_ms = Date.now() + 30000; state.revision++; state.event_seq++; state.tanks[next].moved = 0; setBattle(state);
+  state.turn_index = next;
+  state.current_tank_id = state.tanks[next].id;
+  state.turns_completed = (state.turns_completed || 0) + 1;
+  if (windChangesOnTurn(state.turns_completed, alive)) {
+    state.round += 1;
+    if (windRerollAtRound(state.round)) {
+      state.wind = randomWind();
+      state.wind_changes = (state.wind_changes || 0) + 1;
+    }
+  }
+  state.turn_deadline_ms = Date.now() + 30000;
+  state.revision++;
+  state.event_seq++;
+  state.tanks[next].moved = 0;
+  setBattle(state);
 }
 function handleLocalCommand(type, payload) {
   const state = store.battle; const tank = state?.tanks?.find((item) => item.id === state.current_tank_id); if (!tank || state.phase !== 'playing') return false;
-  if (type === 'battle.move_start' && tank.moved < 80) { tank.x = Math.max(0, Math.min(1175, tank.x + (payload.direction === 'left' ? -1.5 : 1.5))); tank.facing = payload.direction === 'left' ? 'left' : 'right'; tank.moved += 1; state.revision++; setBattle(state); return true; }
+  if (state.intro_active) return false;
+  if (type === 'battle.move_start' && tank.moved < 80) { tank.x = Math.max(0, Math.min(1175, tank.x + (payload.direction === 'left' ? -1.5 : 1.5))); tank.facing = payload.direction === 'left' ? 'left' : 'right'; tank.moved += 1; tank.y = settleLocalTankY(tank, getTerrainAlphaData()).y; state.revision++; setBattle(state); return true; }
   if (type === 'battle.aim_start') { tank.angle = (tank.angle + (payload.direction === 'up' ? 2 : -2) + 360) % 360; state.revision++; setBattle(state); return true; }
-  if (type === 'battle.select_weapon') { if (!(payload.weapon === 'ss' && tank.ss_cooldown > 0)) tank.weapon = payload.weapon; state.revision++; setBattle(state); return true; }
-  if (type === 'battle.fire') { const target = state.tanks.find((item) => item.alive && item.id !== tank.id); if (target) { const damage = tank.weapon === 'ss' ? 350 : tank.weapon === 'shell2' ? 240 : 130; target.health = Math.max(0, target.health - damage); target.alive = target.health > 0; } if (tank.weapon === 'ss') { tank.ss_cooldown = 3; tank.weapon = 'shell1'; } advanceLocalTurn(); return true; }
-  if (type === 'battle.leave') { localMode = false; clearInterval(localTimer); clearBattleState(); store.result = null; page(PAGE.LOBBY); return true; }
+  if (type === 'battle.select_weapon') { if (canSelectWeapon(tank, payload.weapon)) tank.weapon = payload.weapon; state.revision++; setBattle(state); return true; }
+  if (type === 'battle.fire') {
+    const weapon = tank.weapon;
+    const terrain = getTerrainAlphaData();
+    const solidAt = terrain ? (x, y) => {
+      if (x < 0 || y < 0 || x >= terrain.width || y >= terrain.height) return false;
+      return terrain.data[(y * terrain.width + x) * 4 + 3] !== 0;
+    } : () => false;
+    const shot = simulateShot({ tanks: state.tanks, shooter: tank.id, weapon, power: payload.power, wind: state.wind, solidAt });
+    if (!shot) return false;
+    const next = JSON.parse(JSON.stringify(state));
+    const nextTank = next.tanks.find((item) => item.id === tank.id);
+    Object.assign(nextTank, applyFireEffects(nextTank, weapon));
+    for (const damage of shot.damages || []) {
+      const target = next.tanks.find((item) => item.id === damage.tank_id);
+      if (target) { target.health = damage.health_after; target.alive = target.health > 0; }
+    }
+    advanceLocalTurnOn(next);
+    store.input.actionLocked = true;
+    shotAnimating = true;
+    const generation = ++animationGeneration;
+    const battleID = state.battle_id;
+    views.setText('page-status', `${shot.impact?.kind || 'miss'} / ${shot.damage || 0} damage`);
+    playShot($('stage'), shot, () => {
+      if (generation !== animationGeneration || store.page === PAGE.RESULT || store.battle?.battle_id !== battleID) return;
+      shotAnimating = false;
+      store.battle = next;
+      setBattle(next);
+      if (next.phase === 'finished') finalizeBattle(next);
+      else store.input.actionLocked = false;
+    });
+    return true;
+  }
+  if (type === 'battle.leave') { localMode = false; clearInterval(localTimer); clearTimeout(localIntroTimer); clearBattleState(); store.result = null; page(PAGE.LOBBY); return true; }
   return true;
+}
+
+function advanceLocalTurnOn(state) {
+  const alive = state.tanks.filter((item) => item.alive).length;
+  if (alive === 0) return;
+  let next = state.turn_index;
+  for (let i = 0; i < state.tanks.length; i++) { next = (next + 1) % state.tanks.length; if (state.tanks[next].alive) break; }
+  state.turn_index = next;
+  state.current_tank_id = state.tanks[next].id;
+  state.turns_completed = (state.turns_completed || 0) + 1;
+  if (windChangesOnTurn(state.turns_completed, alive)) {
+    state.round += 1;
+    if (windRerollAtRound(state.round)) {
+      state.wind = randomWind();
+      state.wind_changes = (state.wind_changes || 0) + 1;
+    }
+  }
+  state.turn_deadline_ms = Date.now() + 30000;
+  state.revision++;
+  state.event_seq++;
+  state.tanks[next].moved = 0;
+  if (alive === 1) {
+    state.phase = 'finished';
+    state.result = 'win';
+    state.winner_tank_id = state.tanks.find((item) => item.alive)?.id;
+  }
 }
 
 function handleEvent(event) {
@@ -157,16 +324,17 @@ function handleEvent(event) {
     matchController.handleEvent(event);
     return;
   }
-  if (event.type === 'battle.snapshot' || event.type === 'battle.tank_state' || event.type === 'battle.turn_changed' || event.type === 'battle.player_eliminated') {
+  if (event.type === 'battle.snapshot' || event.type === 'battle.tank_state' || event.type === 'battle.turn_changed' || event.type === 'battle.player_eliminated' || event.type === 'battle.intro_complete') {
     if (shotAnimating) {
       deferBattleState(event.payload);
       if (event.event_seq) lastBattleEvent = Math.max(lastBattleEvent, event.event_seq);
       if (event.type === 'battle.snapshot' && event.battle_id) socket.send('battle.resync_ack', {}, { battle_id: event.battle_id });
       return;
     }
+    if (event.type === 'battle.intro_complete') endIntroAnimation();
     if (event.type === 'battle.turn_changed') { clearInputState(); $('power-fill').style.width = '0%'; views.setText('power-value', '0%'); }
     setBattle(event.payload);
-    store.input.actionLocked = false;
+    if (!event.payload?.intro_end_ms || Date.now() + serverOffset >= event.payload.intro_end_ms) store.input.actionLocked = false;
     if (event.event_seq) lastBattleEvent = Math.max(lastBattleEvent, event.event_seq);
     if (event.type === 'battle.snapshot' && event.battle_id) socket.send('battle.resync_ack', {}, { battle_id: event.battle_id });
     if (event.payload?.phase === 'finished') {

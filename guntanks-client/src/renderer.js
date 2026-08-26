@@ -52,6 +52,18 @@ export async function loadTerrainSnapshot(battleID, token) {
 }
 export function isTerrainReady() { return terrainReady; }
 
+export function getTerrainAlphaData() {
+  if (!terrainLayer) return null;
+  const context = terrainLayer.getContext('2d');
+  let data;
+  try {
+    data = context.getImageData(0, 0, terrainLayer.width, terrainLayer.height).data;
+  } catch (_) {
+    return null;
+  }
+  return { width: terrainLayer.width, height: terrainLayer.height, data };
+}
+
 export function render(canvas, state) {
   currentState = state;
   ensureTerrain(canvas, state?.battle_id || '');
@@ -79,8 +91,9 @@ export function render(canvas, state) {
       else context.arc(tank.x, tank.y, ring.radius, (-tank.angle + ring.span) * Math.PI / 180, (-tank.angle - ring.span) * Math.PI / 180, true);
       context.strokeStyle = ring.color; context.lineWidth = 2; context.stroke();
     }
-    context.fillStyle = '#fff';
-    context.fillText(`${tank.id} ${Math.ceil(tank.health)}`, tank.x, tank.y - 34);
+    const name = state.tankNames?.[tank.id] || tank.id;
+    context.fillStyle = tank.id === state.current_tank_id ? '#f00' : '#fff';
+    context.fillText(`${name} ${Math.ceil(tank.health)}`, tank.x, tank.y - 34);
   }
 }
 

@@ -14,7 +14,7 @@ const WEAPON_KEYS = new Map([['1', 'shell1'], ['2', 'shell2'], ['3', 'ss']]);
 export function createInputController({ getPage, getBattle, isSyncing, sendBattleCommand, setPower, getPower, onStatus }) {
   let fireTick = 0;
 
-  const active = () => canReceiveBattleInput(getPage()) && !isSyncing() && !store.input.actionLocked && !!getBattle()?.battle_id;
+  const active = () => canReceiveBattleInput(getPage()) && !isSyncing() && !store.input.actionLocked && !!getBattle()?.battle_id && !getBattle()?.intro_active;
 
   function updatePower(value) {
     const normalized = Math.max(0, Math.min(100, Math.round(value)));

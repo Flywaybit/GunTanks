@@ -104,3 +104,36 @@ func TestTrajectoryIsBoundedAndTerrainDestroyed(t *testing.T) {
 		t.Fatalf("radius=%d", shot.TerrainDestroyed.Radius)
 	}
 }
+
+func TestApplyIntroCompleteLandsTanksAndBumpsSequence(t *testing.T) {
+	s := NewState("b", 2, 1)
+	s.Tanks[0].LandY, s.Tanks[0].Y = 420, -200
+	s.Tanks[1].LandY, s.Tanks[1].Y = 300, -200
+	beforeRev, beforeSeq := s.Revision, s.EventSeq
+	eliminated := s.ApplyIntroComplete(nil)
+	if len(eliminated) != 0 {
+		t.Fatalf("unexpected elimination: %v", eliminated)
+	}
+	if s.Tanks[0].Y != 420 || s.Tanks[1].Y != 300 {
+		t.Fatalf("tanks did not land: %+v", s.Tanks)
+	}
+	if s.Revision != beforeRev+1 || s.EventSeq != beforeSeq+1 {
+		t.Fatalf("revision/event seq not bumped: rev=%d seq=%d", s.Revision, s.EventSeq)
+	}
+}
+
+func TestApplyIntroCompleteEliminatesOutOfBoundsLanding(t *testing.T) {
+	s := NewState("b", 2, 1)
+	s.Tanks[0].LandY, s.Tanks[0].Y = 700, -200
+	s.Tanks[1].LandY, s.Tanks[1].Y = 300, -200
+	eliminated := s.ApplyIntroComplete(nil)
+	if len(eliminated) != 1 || eliminated[0] != "tank_1" {
+		t.Fatalf("unexpected elimination: %v", eliminated)
+	}
+	if s.Tanks[0].Alive || s.Tanks[0].Health != 0 {
+		t.Fatalf("tank_1 should be eliminated: %+v", s.Tanks[0])
+	}
+	if s.Phase != "finished" || s.WinnerTankID != "tank_2" {
+		t.Fatalf("unexpected result: %+v", s)
+	}
+}

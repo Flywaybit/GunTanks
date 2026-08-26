@@ -6,6 +6,9 @@ import (
 	"time"
 )
 
+const introDuration = 1500 * time.Millisecond
+const introSpawnY = -200.0
+
 type Command struct {
 	Type, TankID, Direction string
 	Power                   float64
@@ -32,6 +35,7 @@ type Actor struct {
 	lastBroadcast time.Time
 	pausedAt      time.Time
 	paused        bool
+	introComplete bool
 }
 
 func NewActor(s engine.State, hz int) *Actor {
@@ -43,19 +47,27 @@ func NewActor(s engine.State, hz int) *Actor {
 }
 func (a *Actor) Configure(terrain *engine.TerrainMask, timeout time.Duration) {
 	a.terrain = terrain
-	if terrain != nil {
-		for i := range a.State.Tanks {
-			a.State.Tanks[i].Y = 300
+	if timeout > 0 {
+		a.timeout = timeout
+	}
+	a.applyIntro(terrain)
+}
+func (a *Actor) applyIntro(terrain *engine.TerrainMask) {
+	a.State.IntroEndMS = time.Now().Add(introDuration).UnixMilli()
+	a.State.TurnDeadlineMS = a.State.IntroEndMS + a.timeout.Milliseconds()
+	for i := range a.State.Tanks {
+		tank := &a.State.Tanks[i]
+		landY := 300.0
+		if terrain != nil {
 			for n := 0; n < terrain.Height; n++ {
-				if terrain.SolidAtRect(int(a.State.Tanks[i].X), n+30, 25, 1) {
-					a.State.Tanks[i].Y = float64(n)
+				if terrain.SolidAtRect(int(tank.X), n+30, 25, 1) {
+					landY = float64(n)
 					break
 				}
 			}
 		}
-	}
-	if timeout > 0 {
-		a.timeout = timeout
+		tank.LandY = landY
+		tank.Y = introSpawnY
 	}
 }
 func (a *Actor) Start() {
@@ -85,6 +97,21 @@ func (a *Actor) tick() {
 	}
 	if a.State.Phase == "finished" {
 		return
+	}
+	if a.State.IntroEndMS > 0 && time.Now().UnixMilli() < a.State.IntroEndMS {
+		return
+	}
+	if a.State.IntroEndMS > 0 && !a.introComplete {
+		a.introComplete = true
+		a.State.ApplyIntroComplete(a.terrain)
+		if a.State.TurnDeadlineMS <= a.State.IntroEndMS {
+			a.State.TurnDeadlineMS = time.Now().Add(a.timeout).UnixMilli()
+		}
+		a.Events <- Event{Type: "battle.intro_complete", State: a.State}
+		if a.State.Phase == "finished" {
+			a.moveDirection, a.aimDirection = "", ""
+			return
+		}
 	}
 	changed := false
 	if a.moveDirection != "" {
@@ -137,6 +164,20 @@ func contains(ids []string, id string) bool {
 func (a *Actor) apply(c Command) {
 	var e error
 	var shot engine.Shot
+	if a.State.IntroEndMS > 0 && time.Now().UnixMilli() < a.State.IntroEndMS {
+		switch c.Type {
+		case "pause", "resume", "leave", "disconnect_timeout", "move_stop", "aim_stop":
+			// lifecycle and cleanup commands remain available during intro.
+		default:
+			e = engine.ErrIntroInProgress
+			ev := Event{Type: "battle.tank_state", State: a.State, Error: e}
+			if c.Reply != nil {
+				c.Reply <- ev
+			}
+			a.Events <- ev
+			return
+		}
+	}
 	switch c.Type {
 	case "pause":
 		if !a.paused {

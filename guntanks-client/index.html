@@ -10,6 +10,7 @@
     .battle-stage { position: relative; width: 100%; aspect-ratio: 1200 / 650; overflow: hidden; }
     .battle-stage canvas { width: 100%; height: 100%; object-fit: contain; }
     #main-timer { position: absolute; top: 13px; left: 50%; transform: translateX(-50%); z-index: 4; color: red; font-size: 60px; line-height: 1; background: transparent; pointer-events: none; }
+    #intro-status { position: absolute; top: 22px; left: 50%; transform: translateX(-50%); z-index: 4; color: #fff; font-size: 28px; font-weight: bold; letter-spacing: 4px; text-shadow: 0 0 8px #000, 0 0 2px #000; pointer-events: none; }
     .battle-meta { position: absolute; inset: 16px 16px auto; z-index: 5; }
     .battle-hud { position: relative; width: 100%; height: calc(90px * var(--battle-scale, 1)); overflow: hidden; }
     .battle-hud-content { width: 1200px; height: 90px; transform: scale(var(--battle-scale, 1)); transform-origin: top left; }
@@ -46,9 +47,13 @@
     <section id="battle" data-page class="hidden battle-shell">
       <div class="battle-stage">
         <div id="main-timer" aria-live="polite">30</div>
+        <div id="intro-status" class="hidden">准备中…</div>
         <canvas id="stage" width="1200" height="650"></canvas>
         <div class="battle-meta">
-          <div id="wind-container"><span>Wind</span><strong id="wind-text">0</strong></div>
+          <div id="wind-wrap">
+            <div id="wind-container"><span>Wind</span><strong id="wind-text">0</strong></div>
+            <div id="wind-arrow" class="hidden" aria-hidden="true">→</div>
+          </div>
           <div id="turn-queue-container"><span>Delay Queue</span><ul id="turn-queue"></ul></div>
           <button id="leave-battle" type="button">Leave</button>
         </div>

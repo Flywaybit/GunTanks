@@ -3,5 +3,5 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "scripts": { "dev": "npx serve .", "build": "node build.mjs" }
+  "scripts": { "dev": "npx serve .", "build": "node build.mjs", "test": "node --test src/localSim.test.js" }
 }

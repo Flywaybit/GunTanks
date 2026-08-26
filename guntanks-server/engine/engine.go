@@ -8,6 +8,7 @@ import (
 
 var ErrNotYourTurn = errors.New("not your turn")
 var ErrInvalidCommand = errors.New("invalid command")
+var ErrIntroInProgress = errors.New("intro in progress")
 
 type Weapon string
 
@@ -25,6 +26,7 @@ type Tank struct {
 	ID         string  `json:"id"`
 	X          float64 `json:"x"`
 	Y          float64 `json:"y"`
+	LandY      float64 `json:"land_y,omitempty"`
 	Angle      float64 `json:"angle"`
 	Health     float64 `json:"health"`
 	Alive      bool    `json:"alive"`
@@ -42,6 +44,7 @@ type State struct {
 	BattleID       string            `json:"battle_id"`
 	Revision       uint64            `json:"revision"`
 	EventSeq       uint64            `json:"event_seq"`
+	IntroEndMS     int64             `json:"intro_end_ms,omitempty"`
 	Phase          string            `json:"phase"`
 	Round          int               `json:"round"`
 	TurnIndex      int               `json:"turn_index"`
@@ -159,6 +162,44 @@ func settleTankY(t *Tank, terrain *TerrainMask) float64 {
 	return t.Y
 }
 func SettleY(t *Tank, terrain *TerrainMask) float64 { return settleTankY(t, terrain) }
+
+// ApplyIntroComplete lands every living tank at its authoritative LandY when the
+// intro window expires. It performs one defensive out-of-bounds elimination pass
+// and bumps revision/event sequence exactly once.
+func (s *State) ApplyIntroComplete(terrain *TerrainMask) []string {
+	if s.Phase == "finished" {
+		return nil
+	}
+	var eliminated []string
+	for i := range s.Tanks {
+		t := &s.Tanks[i]
+		if !t.Alive {
+			continue
+		}
+		t.Y = t.LandY
+		if terrain != nil {
+			t.Y = settleTankY(t, terrain)
+		}
+		if math.Abs(t.X) > 1200 || math.Abs(t.Y) > 650 {
+			eliminated = append(eliminated, t.ID)
+		}
+	}
+	s.Revision++
+	s.EventSeq++
+	if len(eliminated) > 0 {
+		currentEliminated := false
+		for _, id := range eliminated {
+			t, _ := s.Tank(id)
+			t.Alive, t.Health = false, 0
+			currentEliminated = currentEliminated || id == s.CurrentTankID
+		}
+		s.finishIfDecided()
+		if s.Phase != "finished" && currentEliminated {
+			s.nextTurn()
+		}
+	}
+	return eliminated
+}
 
 // ApplyGravityAndEliminate advances every living tank, then resolves all boundary
 // losses as one state transition so a simultaneous fall cannot settle twice.
