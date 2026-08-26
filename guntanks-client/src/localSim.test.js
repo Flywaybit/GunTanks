@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  applyLocalGravity,
   applyFireEffects,
   canSelectWeapon,
   computeLandY,
   destroyCircleAlpha,
+  finishLocalBattle,
   randomWind,
   settleLocalTankY,
   simulateShot,
@@ -125,4 +127,64 @@ test('terrain alpha circle destruction and landing Y', () => {
   assert.equal(settled.y, 20, 'tank settles with bottom (y+30) on the floor at y=50');
   const landY = computeLandY(50, terrain);
   assert.equal(landY, 20);
+});
+
+function floorTerrain(width = 1200, height = 650, floorY = 420) {
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let y = floorY; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      data[(y * width + x) * 4 + 3] = 255;
+    }
+  }
+  return { width, height, data };
+}
+
+test('applyLocalGravity keeps a supported tank in place', () => {
+  const terrain = floorTerrain(1200, 650, 420);
+  const tanks = [{ id: 'tank_1', x: 100, y: 390, alive: true, health: 1000 }];
+  const { changed, eliminated } = applyLocalGravity(tanks, terrain);
+  assert.equal(changed, false);
+  assert.deepEqual(eliminated, []);
+  assert.equal(tanks[0].y, 390);
+  assert.equal(tanks[0].alive, true);
+});
+
+test('applyLocalGravity drops a hanging tank onto the terrain', () => {
+  const terrain = floorTerrain(1200, 650, 420);
+  const tanks = [{ id: 'tank_1', x: 100, y: 385, alive: true, health: 1000 }];
+  const { changed, eliminated } = applyLocalGravity(tanks, terrain);
+  assert.equal(changed, true);
+  assert.deepEqual(eliminated, []);
+  assert.equal(tanks[0].y, 390, 'bottom (y+30) rests on the first solid row at y=420');
+});
+
+test('applyLocalGravity eliminates tanks out of bounds', () => {
+  const terrain = floorTerrain(1200, 650, 420);
+  const tanks = [
+    { id: 'tank_1', x: 100, y: 390, alive: true, health: 1000 },
+    { id: 'tank_2', x: 400, y: 700, alive: true, health: 1000 },
+  ];
+  const { changed, eliminated } = applyLocalGravity(tanks, terrain);
+  assert.equal(changed, true);
+  assert.deepEqual(eliminated, ['tank_2']);
+  assert.equal(tanks[1].alive, false);
+  assert.equal(tanks[1].health, 0);
+  assert.equal(tanks[0].alive, true);
+});
+
+test('finishLocalBattle resolves win/draw and leaves ongoing battles open', () => {
+  const ongoing = { tanks: [{ id: 'tank_1', alive: true }, { id: 'tank_2', alive: true }], phase: 'playing' };
+  assert.equal(finishLocalBattle(ongoing), false);
+  assert.equal(ongoing.phase, 'playing');
+
+  const win = { tanks: [{ id: 'tank_1', alive: true }, { id: 'tank_2', alive: false }], phase: 'playing' };
+  assert.equal(finishLocalBattle(win), true);
+  assert.equal(win.phase, 'finished');
+  assert.equal(win.result, 'win');
+  assert.equal(win.winner_tank_id, 'tank_1');
+
+  const draw = { tanks: [{ id: 'tank_1', alive: false }, { id: 'tank_2', alive: false }], phase: 'playing' };
+  assert.equal(finishLocalBattle(draw), true);
+  assert.equal(draw.phase, 'finished');
+  assert.equal(draw.result, 'draw');
 });

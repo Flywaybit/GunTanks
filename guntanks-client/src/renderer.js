@@ -52,6 +52,39 @@ export async function loadTerrainSnapshot(battleID, token) {
 }
 export function isTerrainReady() { return terrainReady; }
 
+export function resetTerrain() {
+  terrainLayer = null;
+  terrainBattleID = '';
+  terrainReady = false;
+  terrainLoadGeneration += 1;
+}
+
+export function waitForTerrainImage() {
+  if (terrainImage.complete && terrainImage.naturalWidth > 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const done = () => resolve();
+    terrainImage.addEventListener('load', done, { once: true });
+    terrainImage.addEventListener('error', done, { once: true });
+  });
+}
+
+// prepareLocalTerrain rebuilds a fresh terrain layer for a local match once the
+// terrain image is available and returns its alpha data for land-y computation.
+export async function prepareLocalTerrain(canvas) {
+  await waitForTerrainImage();
+  resetTerrain();
+  terrainLayer = document.createElement('canvas');
+  terrainLayer.width = canvas.width;
+  terrainLayer.height = canvas.height;
+  terrainBattleID = 'local';
+  terrainReady = true;
+  const context = terrainLayer.getContext('2d');
+  context.drawImage(terrainImage, 50, 320);
+  return getTerrainAlphaData();
+}
+
 export function getTerrainAlphaData() {
   if (!terrainLayer) return null;
   const context = terrainLayer.getContext('2d');

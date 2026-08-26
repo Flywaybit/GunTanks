@@ -183,6 +183,47 @@ export function settleLocalTankY(tank, terrain) {
   return next;
 }
 
+// applyLocalGravity settles every living tank onto the terrain (falling into
+// craters blown by shots) and eliminates tanks that leave the arena. It
+// mirrors the server's ApplyGravityAndEliminate boundary rules.
+export function applyLocalGravity(tanks, terrain) {
+  let changed = false;
+  const eliminated = [];
+  for (const tank of tanks) {
+    if (!tank.alive) {
+      continue;
+    }
+    const before = tank.y;
+    tank.y = settleLocalTankY(tank, terrain).y;
+    changed = changed || tank.y !== before;
+    if (Math.abs(tank.x) > 1200 || Math.abs(tank.y) > 650) {
+      tank.alive = false;
+      tank.health = 0;
+      eliminated.push(tank.id);
+    }
+  }
+  return { changed, eliminated };
+}
+
+// finishLocalBattle resolves the local battle exactly like the server
+// finishIfDecided: one survivor wins, zero survivors draw.
+export function finishLocalBattle(state) {
+  const alive = state.tanks.filter((tank) => tank.alive);
+  if (alive.length === 1) {
+    state.phase = 'finished';
+    state.result = 'win';
+    state.winner_tank_id = alive[0].id;
+    return true;
+  }
+  if (alive.length === 0) {
+    state.phase = 'finished';
+    state.result = 'draw';
+    state.winner_tank_id = '';
+    return true;
+  }
+  return false;
+}
+
 function solidAtRectAlpha(data, width, height, x, y, w, h) {
   for (let py = y; py < y + h; py += 1) {
     for (let px = x; px < x + w; px += 1) {
