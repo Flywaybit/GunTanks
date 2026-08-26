@@ -26,6 +26,9 @@ let localMode = false;
 let localTimer = 0;
 
 function status(text) { views.setText('page-status', text || ''); }
+// Unify the clock base: local matches use the client clock (startSinglePlayer
+// stamps them with Date.now()), online matches use the calibrated server time.
+const nowMs = () => (localMode ? Date.now() : Date.now() + serverOffset);
 function page(page) { if (page !== PAGE.BATTLE && (shotAnimating || introAnimating)) { animationGeneration += 1; introGeneration += 1; } goTo(page); views.show(page); clearInputState(); const fill = $('power-fill'); if (fill) fill.style.width = '0%'; views.setText('power-value', '0%'); }
 function battleState(payload) { return payload?.state || payload; }
 function newerState(candidate, current) {
@@ -116,7 +119,7 @@ function setBattle(payload) {
   if (store.page !== PAGE.BATTLE && store.page !== PAGE.RECONNECTING) page(PAGE.BATTLE);
   render($('stage'), state);
   if (store.page === PAGE.RECONNECTING && isTerrainReady()) { syncing = false; page(PAGE.BATTLE); }
-  if (!localMode && state.battle_id && !isTerrainReady()) { syncing = true; loadTerrainSnapshot(state.battle_id, store.token).then((ok) => { if (ok) { syncing = false; render($('stage'), state); if (store.page === PAGE.RECONNECTING) { page(PAGE.BATTLE); syncIntroUI(state); } } else { status('Unable to load terrain snapshot. Battle input is locked.'); } }); }
+  if (!localMode && state.battle_id && !isTerrainReady()) { syncing = true; loadTerrainSnapshot(state.battle_id, store.token).then((ok) => { if (ok) { syncing = false; render($('stage'), state); if (store.page === PAGE.RECONNECTING) { page(PAGE.BATTLE); syncIntroUI(state); } } else { syncing = false; store.input.actionLocked = false; status('Terrain failed to load. Battle continues without terrain.'); } }); }
   
   const currentTank = state.tanks?.find((tank) => tank.id === state.current_tank_id);
   if (currentTank) {
@@ -140,7 +143,7 @@ function setBattle(payload) {
       windArrow.textContent = Math.cos(windRad) >= 0 ? '→' : '←';
     }
   }
-  if (state.turn_deadline_ms) views.setText('main-timer', `${Math.max(0, Math.min(30, Math.ceil((state.turn_deadline_ms - Date.now() - serverOffset) / 1000)))}`);
+  if (state.turn_deadline_ms) views.setText('main-timer', `${Math.max(0, Math.min(30, Math.ceil((state.turn_deadline_ms - nowMs()) / 1000)))}`);
   const queue = $('turn-queue');
   if (queue) {
     queue.replaceChildren(...(state.tanks || []).filter((tank) => tank.alive).map((tank) => {
@@ -156,7 +159,7 @@ function setBattle(payload) {
 
 function syncIntroUI(state) {
   const introEnd = state?.intro_end_ms;
-  const inIntro = !!introEnd && Date.now() + serverOffset < introEnd;
+  const inIntro = !!introEnd && nowMs() < introEnd;
   state.intro_active = inIntro;
   const timer = $('main-timer');
   const introStatus = $('intro-status');
@@ -234,7 +237,7 @@ function startIntroAnimation(state) {
   const battleID = state.battle_id;
   const frame = () => {
     if (generation !== introGeneration || store.page !== PAGE.BATTLE || store.battle?.battle_id !== battleID) return;
-    const remaining = introEnd - (Date.now() + serverOffset);
+    const remaining = introEnd - nowMs();
     if (remaining <= 0) {
       introAnimating = false;
       render($('stage'), store.battle);
@@ -485,7 +488,7 @@ function handleEvent(event) {
     if (event.type === 'battle.intro_complete') endIntroAnimation();
     if (event.type === 'battle.turn_changed') { clearInputState(); $('power-fill').style.width = '0%'; views.setText('power-value', '0%'); }
     setBattle(event.payload);
-    if ((!event.payload?.intro_end_ms || Date.now() + serverOffset >= event.payload.intro_end_ms) && !event.payload?.paused) store.input.actionLocked = false;
+    if ((!event.payload?.intro_end_ms || nowMs() >= event.payload.intro_end_ms) && !event.payload?.paused) store.input.actionLocked = false;
     if (event.event_seq) lastBattleEvent = Math.max(lastBattleEvent, event.event_seq);
     if (event.type === 'battle.snapshot' && event.battle_id) socket.send('battle.resync_ack', {}, { battle_id: event.battle_id });
     if (battleState(event.payload)?.phase === 'finished') {
@@ -668,7 +671,7 @@ new ResizeObserver(([entry]) => {
 
 setInterval(() => {
   const deadline = store.battle?.turn_deadline_ms;
-  if (store.page === PAGE.BATTLE && deadline && !store.battle?.paused) views.setText('main-timer', `${Math.max(0, Math.min(30, Math.ceil((deadline - Date.now() - serverOffset) / 1000)))}`);
+  if (store.page === PAGE.BATTLE && deadline && !store.battle?.paused) views.setText('main-timer', `${Math.max(0, Math.min(30, Math.ceil((deadline - nowMs()) / 1000)))}`);
 }, 250);
 
 setInterval(() => {

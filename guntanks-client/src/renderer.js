@@ -35,8 +35,13 @@ export async function loadTerrainSnapshot(battleID, token) {
     const encoded = Uint8Array.from(atob(snapshot.data_base64), (c) => c.charCodeAt(0));
     if (snapshot.encoding !== 'gzip-bitset-v1') throw new Error('unsupported terrain encoding');
     const raw = new Uint8Array(await new Response(new Blob([encoded]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
-    const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', raw)), (b) => b.toString(16).padStart(2, '0')).join('');
-    if (snapshot.checksum && digest !== snapshot.checksum) throw new Error('terrain checksum mismatch');
+    // crypto.subtle is only available in secure contexts (HTTPS or
+    // localhost). On LAN IPs over plain HTTP it is undefined, so skip the
+    // same-origin integrity check and rely on gzip + dimension checks.
+    if (crypto.subtle?.digest) {
+      const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', raw)), (b) => b.toString(16).padStart(2, '0')).join('');
+      if (snapshot.checksum && digest !== snapshot.checksum) throw new Error('terrain checksum mismatch');
+    }
     if (snapshot.width !== terrainLayer.width || snapshot.height !== terrainLayer.height) throw new Error('terrain dimensions mismatch');
     const ctx = terrainLayer.getContext('2d');
     const clearMask = () => {
