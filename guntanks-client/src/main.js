@@ -20,6 +20,7 @@ let introAnimating = false;
 let introGeneration = 0;
 let localIntroTimer = 0;
 let localGravityTimer = 0;
+let localInputTimer = 0;
 let localStarting = false;
 let localMode = false;
 let localTimer = 0;
@@ -197,6 +198,7 @@ function syncPauseUI(state) {
 function clearLocalBattleTimers() {
   clearInterval(localTimer); localTimer = 0;
   clearInterval(localGravityTimer); localGravityTimer = 0;
+  clearInterval(localInputTimer); localInputTimer = 0;
   clearTimeout(localIntroTimer); localIntroTimer = 0;
 }
 
@@ -283,6 +285,8 @@ async function startSinglePlayer() {
     localTimer = setInterval(() => { if (localMode && store.battle?.phase === 'playing' && !shotAnimating && !introAnimating && Date.now() >= store.battle.turn_deadline_ms) advanceLocalTurn(); }, 250);
     clearInterval(localGravityTimer);
     localGravityTimer = setInterval(() => { if (localMode && store.battle?.phase === 'playing' && !shotAnimating && !introAnimating) runLocalGravity(); }, 100);
+    clearInterval(localInputTimer);
+    localInputTimer = setInterval(() => { if (localMode && store.battle?.phase === 'playing' && !shotAnimating && !introAnimating && !store.input.actionLocked) runLocalInput(); }, 16);
     clearTimeout(localIntroTimer);
     localIntroTimer = setTimeout(() => {
       if (!localMode || store.battle?.battle_id !== 'local') return;
@@ -318,8 +322,39 @@ function runLocalGravity() {
   }
   setBattle(state);
 }
+
+// runLocalInput drives continuous local movement/aim at ~60Hz, mirroring the
+// online server tick. It only reads the directions already latched by
+// inputController (moveDirection/aimDirection), which keyup/blur clear.
+function runLocalInput() {
+  const state = store.battle;
+  if (!state || state.phase !== 'playing') return;
+  const tank = state.tanks.find((item) => item.id === state.current_tank_id);
+  if (!tank) return;
+  let changed = false;
+  const direction = store.input.moveDirection;
+  if (direction && tank.moved < 80) {
+    const distance = Math.min(1.5, 80 - tank.moved);
+    tank.x = Math.max(0, Math.min(1175, tank.x + (direction === 'left' ? -distance : distance)));
+    tank.facing = direction;
+    tank.moved += distance;
+    tank.y = settleLocalTankY(tank, getTerrainAlphaData()).y;
+    changed = true;
+  }
+  const aim = store.input.aimDirection;
+  if (aim) {
+    tank.angle = (tank.angle + (aim === 'up' ? 2 : -2) + 360) % 360;
+    changed = true;
+  }
+  if (changed) {
+    render($('stage'), state);
+    views.setText('angle-display', `${Math.round(tank.angle)}°`);
+  }
+}
 function advanceLocalTurn() {
   const state = store.battle; if (!state) return;
+  store.input.moveDirection = null;
+  store.input.aimDirection = null;
   const alive = state.tanks.filter((item) => item.alive).length;
   if (alive === 0) return;
   let next = state.turn_index;
@@ -343,11 +378,14 @@ function advanceLocalTurn() {
 function handleLocalCommand(type, payload) {
   const state = store.battle; const tank = state?.tanks?.find((item) => item.id === state.current_tank_id); if (!tank || state.phase !== 'playing') return false;
   if (state.intro_active) return false;
-  if (type === 'battle.move_start' && tank.moved < 80) { tank.x = Math.max(0, Math.min(1175, tank.x + (payload.direction === 'left' ? -1.5 : 1.5))); tank.facing = payload.direction === 'left' ? 'left' : 'right'; tank.moved += 1; tank.y = settleLocalTankY(tank, getTerrainAlphaData()).y; state.revision++; setBattle(state); return true; }
-  if (type === 'battle.aim_start') { tank.angle = (tank.angle + (payload.direction === 'up' ? 2 : -2) + 360) % 360; state.revision++; setBattle(state); return true; }
+  // Movement/aim directions are latched by inputController; the local input
+  // loop applies them continuously (same as the online server tick).
+  if (type === 'battle.move_start' || type === 'battle.aim_start') return true;
   if (type === 'battle.select_weapon') { if (canSelectWeapon(tank, payload.weapon)) tank.weapon = payload.weapon; state.revision++; setBattle(state); return true; }
   if (type === 'battle.fire') {
     if (shotAnimating) return false;
+    store.input.moveDirection = null;
+    store.input.aimDirection = null;
     const weapon = tank.weapon;
     const terrain = getTerrainAlphaData();
     const solidAt = terrain ? (x, y) => {
@@ -396,6 +434,8 @@ function handleLocalCommand(type, payload) {
 }
 
 function advanceLocalTurnOn(state) {
+  store.input.moveDirection = null;
+  store.input.aimDirection = null;
   const alive = state.tanks.filter((item) => item.alive).length;
   if (alive === 0) return;
   let next = state.turn_index;
