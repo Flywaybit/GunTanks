@@ -69,9 +69,9 @@ export function render(canvas, state) {
     if (sprite.complete) context.drawImage(sprite, tank.facing === 'left' ? tank.x - 10 : tank.x - 25, tank.y - 27);
     else { context.fillStyle = tank.id === state.current_tank_id ? '#53d769' : '#e05656'; context.fillRect(tank.x - 13, tank.y - 15, 26, 30); }
     context.fillStyle = '#d22';
-    context.fillRect(tank.x - 18, tank.y + 18, 36, 4);
+    context.fillRect(tank.x - 10, tank.y + 35, 36, 4);
     context.fillStyle = '#2f5';
-    context.fillRect(tank.x - 18, tank.y + 18, 36 * Math.max(0, Math.min(1, tank.health / 1000)), 4);
+    context.fillRect(tank.x - 10, tank.y + 35, 36 * Math.max(0, Math.min(1, tank.health / 1000)), 4);
     const rings = [{radius:50, span:20, color:'rgba(255,255,255,.7)'}, {radius:50, span:5, color:'rgba(255,0,0,.7)'}, {radius:45, span:2, color:'rgba(255,0,0,1)'}];
     for (const ring of rings) {
       context.beginPath();
