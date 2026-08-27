@@ -672,6 +672,17 @@ new ResizeObserver(([entry]) => {
 setInterval(() => {
   const deadline = store.battle?.turn_deadline_ms;
   if (store.page === PAGE.BATTLE && deadline && !store.battle?.paused) views.setText('main-timer', `${Math.max(0, Math.min(30, Math.ceil((deadline - nowMs()) / 1000)))}`);
+  // Self-heal: when the intro window has passed (even if battle.intro_complete
+  // was delayed or missed), clear the intro gate so the first turn unlocks
+  // locally instead of waiting for the next state event. paused/syncing/page
+  // gates stay untouched and keep blocking elsewhere.
+  const battle = store.battle;
+  if (battle?.intro_end_ms && battle.intro_active && !battle.paused && nowMs() >= battle.intro_end_ms) {
+    battle.intro_active = false;
+    store.input.actionLocked = false;
+    $('intro-status')?.classList.add('hidden');
+    $('main-timer')?.classList.remove('hidden');
+  }
 }, 250);
 
 setInterval(() => {
